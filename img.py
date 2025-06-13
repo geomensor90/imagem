@@ -2,12 +2,19 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageColor
 from fpdf import FPDF
 from streamlit_image_coordinates import streamlit_image_coordinates
+import json
+from pathlib import Path
+import time
 
-# Configuração
+# ======================================
+# CONFIGURAÇÕES INICIAIS
+# ======================================
 st.set_page_config(layout="wide")
-st.title("🔧 Relatório de Inspeção")
+st.title("🚽 Relatório de Acessibilidade (NBR 9050)")
 
-# 1. Dicionário de ambientes (IMPORTANTE: ajuste os caminhos das imagens!)
+# ======================================
+# DADOS DOS AMBIENTES (EDITÁVEL)
+# ======================================
 AMBIENTES = {
     "Banheiro": {
         "path": "pasta_imagens/banheiro.jpg",
@@ -35,97 +42,137 @@ AMBIENTES = {
     }
 }
 
-# 2. Inicializar relatório único
+# ======================================
+# SISTEMA DE AUTOSALVAMENTO (NOVO)
+# ======================================
+SAVE_FILE = "dados_relatorio.json"
+
+# Adicione no início do seu código (após criar SAVE_FILE)
+def limpar_relatorio_completo():
+    """Limpa relatório, arquivo salvo E cache do Streamlit"""
+
+    
+    # 2. Limpa o arquivo JSON
+    SAVE_FILE = "dados_relatorio.json"
+    if Path(SAVE_FILE).exists():
+        Path(SAVE_FILE).unlink()
+    
+    # 3. Limpa o cache do Streamlit (importante!)
+    st.cache_data.clear()  # Limpa todos os caches de dados
+    st.cache_resource.clear()  # Limpa caches de recursos
+    
+    # 4. Feedback e recarga
+    st.success("🧹 Limpeza total concluída (dados + cache)!")
+    time.sleep(1)
+    st.rerun()
+
+def carregar_dados():
+    """Carrega os dados salvos localmente"""
+    arquivo = Path(SAVE_FILE)
+    if arquivo.exists():
+        with open(arquivo, 'r') as f:
+            return json.load(f)
+    return []
+
+def salvar_dados():
+    """Salva os dados no arquivo local"""
+    with open(SAVE_FILE, 'w') as f:
+        json.dump(st.session_state.relatorio, f)
+
+# ======================================
+# INICIALIZAÇÃO (COM DADOS SALVOS)
+# ======================================
 if "relatorio" not in st.session_state:
-    st.session_state.relatorio = []
+    st.session_state.relatorio = carregar_dados()
 
-# 3. Seletor de ambiente
-ambiente_selecionado = st.selectbox("Selecione o ambiente:", list(AMBIENTES.keys())) 
+# ======================================
+# INTERFACE PRINCIPAL
+# ======================================
+# Seletor de ambiente
+ambiente_selecionado = st.selectbox("Selecione o ambiente:", list(AMBIENTES.keys()))
 
-# 4. Carregar imagem e desenhar áreas clicáveis
+# Carrega imagem e áreas
 try:
     ambiente = AMBIENTES[ambiente_selecionado]
     image = Image.open(ambiente["path"])
     
-    # Criar imagem com retângulos semitransparentes
-    image_with_rectangles = image.copy()
-    draw = ImageDraw.Draw(image_with_rectangles, "RGBA")
+    # Desenha retângulos semitransparentes
+    img_com_areas = image.copy()
+    draw = ImageDraw.Draw(img_com_areas, "RGBA")
     
     for area, params in ambiente["areas"].items():
         draw.rectangle(
             [(params["xmin"], params["ymin"]), (params["xmax"], params["ymax"])],
             outline=params["color"],
-            fill=(*ImageColor.getrgb(params["color"]), 20),  # 50 = opacidade (0-255)
+            fill=(*ImageColor.getrgb(params["color"]), 20),
             width=2
         )
     
+    # Mostra imagem interativa
+    st.subheader(f"Inspeção: {ambiente_selecionado}")
+    coordenadas = streamlit_image_coordinates(img_com_areas, key=f"coords_{ambiente_selecionado}")
+    
+    # Processa cliques
+    if coordenadas:
+        x, y = coordenadas["x"], coordenadas["y"]
+        #st.write(f"📍 Coordenadas: X={x}, Y={y}")
+        
+        for area, params in ambiente["areas"].items():
+            if (params["xmin"] <= x <= params["xmax"]) and (params["ymin"] <= y <= params["ymax"]):
+                novo_item = f"{ambiente_selecionado} - {area}: {params['texto']}"
+                if novo_item not in st.session_state.relatorio:
+                    st.session_state.relatorio.append(novo_item)
+                    salvar_dados()  # Autosalvamento
+                    st.toast(f"✅ {area} adicionado")
+
 except FileNotFoundError:
     st.error(f"Erro: Imagem não encontrada em '{ambiente['path']}'")
-    st.stop()
 
-# 5. Mostrar imagem e capturar cliques
-st.subheader(f"Clique nos itens problemáticos ({ambiente_selecionado})")
-coordinates = streamlit_image_coordinates(image_with_rectangles, key=f"coords_{ambiente_selecionado}")
-if coordinates:
-    x, y = coordinates["x"], coordinates["y"]
-    st.write(f"📍 Coordenadas do clique: X={x}, Y={y}")  # Mostra as coordenadas brutas
-    
-    # Verifica se está dentro de alguma área (opcional)
-    for area, params in ambiente["areas"].items():
-        if (params["xmin"] <= x <= params["xmax"]) and (params["ymin"] <= y <= params["ymax"]):
-            st.write(f"✅ Área identificada: {area} (X={params['xmin']}-{params['xmax']}, Y={params['ymin']}-{params['ymax']})")
-if coordinates:
-    x, y = coordinates["x"], coordinates["y"]
-    for area, params in ambiente["areas"].items():
-        if (params["xmin"] <= x <= params["xmax"]) and (params["ymin"] <= y <= params["ymax"]):
-            item_texto = f"{ambiente_selecionado} - {area}: {params['texto']}"
-            if item_texto not in st.session_state.relatorio:
-                st.session_state.relatorio.append(item_texto)
-                st.toast(f"✅ Item adicionado: {area}")
-
-# 6. Mostrar relatório atual
+# ======================================
+# RELATÓRIO E AÇÕES
+# ======================================
 st.divider()
 st.subheader("📋 Itens no Relatório")
 
-if st.session_state.relatorio:
-    for item in st.session_state.relatorio:
+# Lista de itens com opção de remoção
+for i, item in enumerate(st.session_state.relatorio):
+    col1, col2 = st.columns([0.9, 0.1])
+    with col1:
         st.write(f"- {item}")
-else:
-    st.info("Nenhum item adicionado ainda.")
+    with col2:
+        if st.button("🗑️", key=f"del_{i}"):
+            st.session_state.relatorio.pop(i)
+            salvar_dados()
+            st.rerun()
 
-# 7. Botões de ação
+# Botões principais
 col1, col2 = st.columns(2)
 with col1:
-    if st.button("🧹 Limpar Relatório", type="primary"):
+    # No botão de limpar:
+    if st.button("🧹 Limpar Tudo", type="primary", key="limpar_tudo"):
         st.session_state.relatorio = []
-        st.rerun()
-        
-from io import BytesIO
-import base64
+        limpar_relatorio_completo()
+        st.success("Relatório limpo com sucesso!")
+        time.sleep(1)  # Pequeno delay para exibir a mensagem
+        st.rerun()  # Usamos st.rerun() normal agora
 
 with col2:
-
-
-    # Substitua a parte do PDF no seu código por:
     if st.session_state.relatorio:
-        # [...] (código anterior igual)
-        if st.button("📄 Gerar PDF", type="secondary"):
-            if st.session_state.relatorio:
-                pdf = FPDF()
-                pdf.add_page()
-                pdf.set_font("Arial", size=12)
-                pdf.cell(200, 10, txt="RELATÓRIO DE INSPEÇÃO", ln=True)
-                
-                for item in st.session_state.relatorio:
-                    pdf.cell(200, 10, txt=item, ln=True)
-                
-                # Gera o PDF em memória para download
-                pdf_bytes = pdf.output(dest="S").encode("latin1")
-                st.download_button(
-                    label="⬇️ Baixar PDF",
-                    data=pdf_bytes,
-                    file_name="relatorio_inspecao.pdf",
-                    mime="application/pdf",
-                )
-            else:
-                st.warning("Adicione itens antes de gerar o PDF.")
+        # Geração do PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="RELATÓRIO DE ACESSIBILIDADE", ln=True)
+        
+        for item in st.session_state.relatorio:
+            pdf.multi_cell(0, 10, txt=item)
+        
+        pdf_bytes = pdf.output(dest="S").encode("latin1")
+        st.download_button(
+            label="📄 Gerar PDF",
+            data=pdf_bytes,
+            file_name="relatorio_acessibilidade.pdf",
+            mime="application/pdf",
+        )
+    else:
+        st.warning("Adicione itens antes de gerar o PDF")
